@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "ROS Voicemail Downloader",
+  "version": "1.1.0",
+  "description": "Save Gmail voicemail attachments with the caller's phone number.",
+  "permissions": [
+    "downloads"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mail.google.com/*"
+      ],
+      "js": [
+        "voicemail.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "https://mail.google.com/*"
+  ]
+}
