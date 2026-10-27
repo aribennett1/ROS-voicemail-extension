@@ -1,45 +1,51 @@
-importScripts("voicemail.js");
-chrome.runtime.onMessage.addListener((message, sender, reply) => {
-  if (message?.type !== "download-voicemail") return;
-  (async () => {
-    if (sender.id !== chrome.runtime.id || !sender.tab || new URL(sender.url).origin !== "https://mail.google.com") {
-      throw new Error("Open the voicemail in Gmail first.");
-    }
-    const id = await chrome.downloads.download(Voicemail.options(message.url, message.phone));
-    reply({ ok: true, id });
-  })().catch(error => reply({ ok: false, error: error.message }));
-  return true;
-});
-
-// Native downloads often have no usable URL in Gmail's DOM (especially in preview).
-// Ask Gmail tabs which exact Download control was just clicked instead.
-chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
-  const basename = item.filename.split(/[\\/]/).pop();
-  if (!/^voicemail(?: \(\d+\))?\.wav$/i.test(basename) || item.byExtensionId) {
-    suggest();
-    return;
+// Register only while a Gmail download is pending. A permanent no-op filename
+// listener can compete with other extensions in Chrome (even suggest() is not
+// reliably neutral). Removing a listener releases Chrome's pending determiner.
+let pending = [];
+let expiryTimer;
+function disarm() {
+  chrome.downloads.onDeterminingFilename.removeListener(determineFilename);
+}
+function refresh() {
+  clearTimeout(expiryTimer);
+  pending = pending.filter(intent => intent.expires > Date.now());
+  if (!pending.length) { disarm(); return; }
+  if (!chrome.downloads.onDeterminingFilename.hasListener(determineFilename)) {
+    chrome.downloads.onDeterminingFilename.addListener(determineFilename);
   }
+  expiryTimer = setTimeout(refresh, Math.max(1, Math.min(...pending.map(intent => intent.expires)) - Date.now()));
+}
+function decline() {
+  // Do not call suggest() or implicitly let Chrome call it. Unregistering
+  // releases this determiner without submitting an empty filename override.
+  disarm();
+  refresh();
+  return true;
+}
+function determineFilename(item, suggest) {
+  const basename = item.filename.split(/[\\/]/).pop();
+  if (item.byExtensionId || !/^voicemail(?: \(\d+\))?\.wav$/i.test(basename)) return decline();
   let source;
   try {
     source = new URL(item.referrer || item.url);
-    if (source.protocol !== "https:" || !["mail.google.com", "mail-attachment.googleusercontent.com"].includes(source.hostname)) {
-      suggest();
-      return;
+    if (source.protocol !== "https:" || !["mail.google.com", "mail-attachment.googleusercontent.com"].includes(source.hostname)) return decline();
+  } catch { return decline(); }
+  const account = source.pathname.match(/\/u\/\d+\//)?.[0];
+  const matches = pending.filter(intent => intent.expires > Date.now() && (!account || intent.account === account));
+  if (matches.length !== 1) return decline();
+  const intent = matches[0];
+  pending = pending.filter(candidate => candidate !== intent);
+  suggest({ filename: `Voicemail - ${intent.phone}.wav`, conflictAction: "uniquify" });
+  refresh();
+}
+chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  if (message?.type !== "arm-native-voicemail") return;
+  try {
+    if (sender.id !== chrome.runtime.id || !sender.tab || new URL(sender.url).origin !== "https://mail.google.com" || !/^\d{7,15}$/.test(message.phone)) {
+      throw new Error("Open the voicemail in Gmail first.");
     }
-  } catch { suggest(); return; }
-  (async () => {
-    const tabs = await chrome.tabs.query({ url: "https://mail.google.com/*" });
-    const results = await Promise.all(tabs.filter(tab => {
-      // Keep signed-in accounts isolated when Google supplies the account path.
-      const account = source.pathname.match(/\/u\/\d+\//)?.[0];
-      return !account || new URL(tab.url).pathname.includes(account);
-    }).map(async tab => {
-      try { return await chrome.tabs.sendMessage(tab.id, { type: "identify-native-voicemail" }); }
-      catch { return null; }
-    }));
-    const matches = results.filter(result => result && /^\d{7,15}$/.test(result.phone));
-    if (matches.length === 1) suggest({ filename: `Voicemail - ${matches[0].phone}.wav`, conflictAction: "uniquify" });
-    else suggest();
-  })().catch(() => suggest());
-  return true;
+    pending.push({ phone: message.phone, account: new URL(sender.url).pathname.match(/\/u\/\d+\//)?.[0], expires: Date.now() + 30000 });
+    refresh();
+    reply({ ok: true });
+  } catch (error) { reply({ ok: false, error: error.message }); }
 });

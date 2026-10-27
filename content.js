@@ -1,5 +1,5 @@
 (() => {
-  let nativeIntent = null;
+  const replaying = new WeakSet();
   let previewEntry = null;
   const routeKey = () => location.href.split("?")[0];
   function messagePhone(message) {
@@ -14,17 +14,10 @@
     }
     return null;
   }
-  chrome.runtime.onMessage.addListener((message, sender, reply) => {
-    if (message?.type !== "identify-native-voicemail") return;
-    const intent = nativeIntent;
-    if (!intent || Date.now() - intent.time > 30000 || intent.route !== routeKey()) return reply(null);
-    // Consume once; unrelated downloads cannot inherit the caller indefinitely.
-    nativeIntent = null;
-    reply({ phone: intent.phone, page: location.href });
-  });
   // Let Gmail perform its own authenticated download. The worker names the resulting file.
   document.addEventListener("click", event => {
     const target = event.target instanceof Element ? event.target : event.target.parentElement;
+    if (replaying.has(target)) return;
     const message = target?.closest(".adn");
     const phone = messagePhone(message);
     let card = target?.closest(".aZo, .aQy");
@@ -36,7 +29,8 @@
     }
     const wav = card && /\.wav\b/i.test(card.textContent + " " + card.getAttribute("download_url"));
     if (phone && wav) previewEntry = { phone, route: routeKey() };
-    if (!downloadControl(target)) return;
+    const control = downloadControl(target);
+    if (!control) return;
     let selected = phone && wav ? phone : null;
     if (!selected && /[?&]projector=1\b/.test(location.href)) {
       if (previewEntry?.route === routeKey()) selected = previewEntry.phone;
@@ -45,6 +39,17 @@
         if (phones.length === 1 && /voicemail\.wav/i.test(document.body.textContent)) selected = phones[0];
       }
     }
-    nativeIntent = selected ? { phone: selected, route: routeKey(), time: Date.now() } : null;
+    if (!selected) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    // Wait for the worker to register before Gmail starts the download.
+    const route = location.href;
+    chrome.runtime.sendMessage({ type: "arm-native-voicemail", phone: selected })
+      .catch(error => console.warn("Voicemail naming unavailable; reload Gmail.", error))
+      .finally(() => {
+        if (!control.isConnected || location.href !== route) return;
+        replaying.add(control);
+        try { control.click(); } finally { replaying.delete(control); }
+      });
   }, true);
 })();

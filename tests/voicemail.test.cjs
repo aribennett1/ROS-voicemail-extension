@@ -25,21 +25,3 @@ test('reject unrelated URLs, deceptive hosts, and filename injection', () => {
   }
   assert.throws(() => V.options(url, '../secret'));
 });
-test('worker validates sender and forwards download failures', async () => {
-  let listener;
-  const downloads = [];
-  const chrome = {runtime:{id:'extension',onMessage:{addListener(fn){listener=fn;}}},
-    downloads:{onDeterminingFilename:{addListener(){}},async download(options){downloads.push(options); return 123;}}};
-  vm.runInNewContext(fs.readFileSync(require.resolve('../background.js'), 'utf8'), {
-    chrome, URL, Voicemail:V, importScripts(){}
-  });
-  const message = {type:'download-voicemail', url, phone:'18482221749'};
-  const sender = {id:'extension',tab:{id:1},url:'https://mail.google.com/mail/u/1/'};
-  const send = (s) => new Promise(resolve => listener(message, s, resolve));
-  assert.equal((await send(sender)).ok, true);
-  assert.equal(downloads.length, 1);
-  assert.equal((await send({...sender,url:'https://evil.com/'})).ok, false);
-  assert.equal(downloads.length, 1);
-  chrome.downloads.download = async () => {throw new Error('Download failed');};
-  assert.equal((await send(sender)).error, 'Download failed');
-});
