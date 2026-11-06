@@ -40,11 +40,20 @@
       }
     }
     if (!selected) return;
+    let registration;
+    try {
+      registration = chrome.runtime.sendMessage({ type: "arm-native-voicemail", phone: selected });
+    } catch (error) {
+      // Reloaded extensions leave old content scripts in open Gmail tabs.
+      // Keep the original Gmail click intact when that script cannot reach its worker.
+      console.warn("Voicemail naming unavailable; reload Gmail.", error);
+      return;
+    }
     event.preventDefault();
     event.stopImmediatePropagation();
     // Wait for the worker to register before Gmail starts the download.
     const route = location.href;
-    chrome.runtime.sendMessage({ type: "arm-native-voicemail", phone: selected })
+    Promise.resolve(registration)
       .catch(error => console.warn("Voicemail naming unavailable; reload Gmail.", error))
       .finally(() => {
         if (!control.isConnected || location.href !== route) return;
