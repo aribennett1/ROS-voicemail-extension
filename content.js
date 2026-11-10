@@ -1,6 +1,15 @@
 (() => {
   const replaying = new WeakSet();
   let previewEntry = null;
+  let contextAvailable = true;
+  function disable() {
+    contextAvailable = false;
+    document.removeEventListener("click", onClick, true);
+  }
+  function registrationFailed(error) {
+    if (/Extension context invalidated/i.test(error?.message || "")) disable();
+    else console.warn("Voicemail naming unavailable; reload Gmail.", error);
+  }
   const routeKey = () => location.href.split("?")[0];
   function messagePhone(message) {
     const sender = message?.querySelector('.gD[email], .gD[data-hovercard-id], [email="no-reply@storiesinthecloud.com"]');
@@ -15,7 +24,13 @@
     return null;
   }
   // Let Gmail perform its own authenticated download. The worker names the resulting file.
-  document.addEventListener("click", event => {
+  function onClick(event) {
+    // Chrome leaves this script in open tabs after an extension reload.
+    // Check before calling an API that would report an invalidated context.
+    if (!contextAvailable || !chrome.runtime?.id) {
+      disable();
+      return;
+    }
     const target = event.target instanceof Element ? event.target : event.target.parentElement;
     if (replaying.has(target)) return;
     const message = target?.closest(".adn");
@@ -46,7 +61,7 @@
     } catch (error) {
       // Reloaded extensions leave old content scripts in open Gmail tabs.
       // Keep the original Gmail click intact when that script cannot reach its worker.
-      console.warn("Voicemail naming unavailable; reload Gmail.", error);
+      registrationFailed(error);
       return;
     }
     event.preventDefault();
@@ -54,11 +69,12 @@
     // Wait for the worker to register before Gmail starts the download.
     const route = location.href;
     Promise.resolve(registration)
-      .catch(error => console.warn("Voicemail naming unavailable; reload Gmail.", error))
+      .catch(registrationFailed)
       .finally(() => {
         if (!control.isConnected || location.href !== route) return;
         replaying.add(control);
         try { control.click(); } finally { replaying.delete(control); }
       });
-  }, true);
+  }
+  document.addEventListener("click", onClick, true);
 })();
